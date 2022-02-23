@@ -7,6 +7,7 @@ module.exports = {
 		filename: 'bundle.js',
 		path: path.resolve(__dirname, './dist/js')
 	},
+  mode: 'development',
 	module: {
 		rules: [
 			{
@@ -45,5 +46,11 @@ module.exports = {
         }
       }),
     ],    
+  },
+  devServer: {
+    static: './dist',
+    hot: true,
+    compress: true,
+    port: 9000,
   }
 };
