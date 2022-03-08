@@ -1,5 +1,5 @@
 import React, { Component} from "react";
-import {BlobServiceClient, BlobCorsRule} from "@azure/storage-blob";
+import {ContainerClient, BlobCorsRule} from "@azure/storage-blob";
 import Ring from "ringjs";
 import StorageConnectionModal from "./StorageConnectionModal.js";
 let debug = true;
@@ -34,6 +34,10 @@ const dataLabels = ["Time","RcvTime","LeqA","LeqB","LeqC","LeqZ","Leq6.3Hz","Leq
 const length5msecs = 300;
 const length1hsecs = 3600;
   
+function sleep(millis) {
+  return new Promise(resolve => setTimeout(resolve, millis));
+}
+
 // based on https://software.es.net/react-timeseries-charts/#/example/realtime
 
 export default class NMC extends React.Component {  
@@ -50,13 +54,18 @@ export default class NMC extends React.Component {
           windowStartTime:new Date(new Date().getTime()-3600*1000),
           windowEndTime:new Date()
         },
-        visibleTS: ["LeqA","LeqA_5m", "LeqA_1h"],
+        visibleTS: ["LeqA", "Leq40Hz", "Leq50Hz", "Leq63Hz"],
         startTime: new Date(),
         time: new Date(),
         events: new Array(0),
         minValue:NaN,
         maxValue:NaN,
         storageConnectionStatus:"n/a",
+        https:false,
+        serverAddress:"192.168.188.20",
+        port:3000,
+        retry:0,
+        uiState:{}
   };
 
   zeroPad(str,digits) {
@@ -89,7 +98,7 @@ export default class NMC extends React.Component {
     const latestTime = `${this.state.time}`;
 
     const lineStyle = {
-      "LeqA":{
+      "raw":{
             normal: {
                 stroke: "gold",
                 fill:"none",
@@ -97,7 +106,7 @@ export default class NMC extends React.Component {
                 opacity: 0.7
             }
       },
-      "LeqA_5m":{
+      "c5m":{
             normal: {
                 stroke: "gold",
                 fill:"none",
@@ -106,7 +115,7 @@ export default class NMC extends React.Component {
                 opacity: 0.7
             }
       },
-      "LeqA_1h":{
+      "c1h":{
             normal: {
                 stroke: "gold",
                 fill:"none",
@@ -115,31 +124,25 @@ export default class NMC extends React.Component {
                 opacity: 0.7
             }
       },
-      "Leq40Hz":{
+      "s5m":{
             normal: {
-                stroke: "orangered",
+                stroke: "red",
                 fill:"none",
+                strokeDasharray:"10,10",
                 strokeWidth:3,
                 opacity: 0.7
             }
       },
-      "Leq50Hz":{
+      "s1h":{
             normal: {
-                stroke: "forestgreen",
+                stroke: "red",
                 fill:"none",
+                strokeDasharray:"20,10",
                 strokeWidth:3,
                 opacity: 0.7
             }
       },
-      "Leq63Hz":{
-            normal: {
-                stroke: "darkorchid",
-                fill:"none",
-                strokeWidth:3,
-                opacity: 0.7
-            }
-      },
-      "Leq80Hz":{
+      "attn":{
             normal: {
                 stroke: "white",
                 fill:"none",
@@ -148,37 +151,27 @@ export default class NMC extends React.Component {
             }
       }
     };
+    let generateLineStyle = (tsname)=>{
+      let res = {};
+      res[tsname] = lineStyle.raw;
+      res[tsname+"_5m"] = lineStyle["c5m"];
+      res[tsname+"_1h"] = lineStyle["c1h"];
+      res[tsname+"_a5m"] = lineStyle["s5m"];
+      res[tsname+"_a1h"] = lineStyle["s1h"];
+      res[tsname+"_attn"] = lineStyle["attn"];
+      //console.log("returning line style map: " + JSON.stringify(res));
+      return res;
+    }
     
 
     if(this.state.storageConnectionStatus == "n/a" || this.state.storageConnectionStatus == "error") {
       return <StorageConnectionModal message={this.state.storageConnectionMessage} status={this.state.storageConnectionStatus} onSubmit={this.connectToStorage.bind(this)}/>
     }
     
-    
-    const eventSeries = [];
-    let evArr = this.state.events;
-    /*if(evArr)console.log("render: constructing time series based on array: " + JSON.stringify(evArr.map(x=>{try {
-      return new Date(x.timestamp()).toISOString();
-    }
-    catch(e){console.error("cannot convert to isostrimg: " + JSON.stringify(x)); return x;}}),null,2));
-    */
-    eventSeries[0] = new TimeSeries({ name: "raw", events: evArr });
+   
+    const eventSeries = new TimeSeries({ name: "raw", events: this.state.events });
     const timeRange = new TimeRange(this.state.dataWindow.windowStartTime, this.state.dataWindow.windowEndTime);
     
-    /* the problem here is that this just cuts the series into 5m adjacent windows, not usable for providing a floating window aggregation
-    eventSeries[1] = eventSeries[0].fixedWindowRollup({
-        windowSize: "5m",
-        aggregation: {LeqA_5m: {LeqA: avg()}},
-        toTimeEvents:true
-    });    */ 
-
-    // Charts (after a certain amount of time, just show hourly rollup)
-    const charts = (
-        <Charts>
-        {eventSeries.map((es,idx)=><LineChart style={lineStyle} columns={this.state.visibleTS} axis="y" series={eventSeries[idx]} interpolation="curveLinear"/>)}
-        </Charts>
-    );
-
     const dateStyle = {
         fontSize: 12,
         color: "#AAA",
@@ -189,52 +182,51 @@ export default class NMC extends React.Component {
     const ymin = this.state.minValue;
     const ymax = this.state.maxValue;
     //console.log("ymin = " + ymin + ", ymax = " + ymax)
-    let event = eventSeries[0]?eventSeries[0].atLast():null;
-    let temps = 0;
-    for(let i = 0; i < eventSeries.length;i++) {
-      if(eventSeries[i].atLast())temps++;
-    }
-    const currentTemp = event?event.toJSON().data.value:NaN;
+    let mostRecentEvent = eventSeries.atLast()?eventSeries.atLast():null;
     const chartHeight = Math.max(150,this.state.height-120);    
-    return (
-            <div>
+
+    let chartContainer = <ChartContainer timeRange={timeRange}>
+                              {this.state.visibleTS.map((el, idx)=> {
+                                return <ChartRow key={"cr_"+el} height={chartHeight/this.state.visibleTS.length}>
+                                    <YAxis
+                                        id="y"
+                                        label={el}
+                                        min={isNaN(this.state.minValue)?25:this.state.minValue}
+                                        max={isNaN(this.state.maxValue)?100:this.state.maxValue}
+                                        width="70"
+                                        type="linear"
+                                        format=".2f"
+                                        showGrid={true}
+                                    />
+                                    <Charts>
+                                      <LineChart style={generateLineStyle(el)} columns={[el,el+"_5m",el+"_a5m"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
+                                    </Charts>
+                                </ChartRow>;
+                                })
+                              }
+                            </ChartContainer>;
+
+    let result =<div>
                 <div className="row">
                     <div className="col-md-8">
-                        <span style={dateStyle}>{latestTime}</span>
+                        <span style={dateStyle}>{new Date().toString()}</span>
                     </div>
                     <div className="col-md-8">
-                        <div style={{"display":"flex","width":"100%","fontSize":"32pt","color":"white"}}>{eventSeries.map((e,idx)=><div style={{width:""+(100/temps)+"%"}}>{
-                          eventSeries[idx].atLast()?
-                          <span>T{idx} {eventSeries[idx].atLast().toJSON().data.value} °C</span>:
-                          <div/>
-                        }
-                          </div>)}</div>
+                        <div style={{"display":"flex","width":"100%","fontSize":"32pt","color":"white"}}>
+                        Noise Monitoring Client 
+                        </div>
                     </div>
                 </div>
                 <hr />
                 <div className="row">
                     <div className="col-md-12">
-                        <Resizable>
-                            <ChartContainer timeRange={timeRange}>
-                                <ChartRow height={chartHeight}>
-                                    <YAxis
-                                        id="y"
-                                        label="Leq"
-                                        min={isNaN(this.state.minValue)?0:this.state.minValue}
-                                        max={isNaN(this.state.maxValue)?100:this.state.maxValue}
-                                        width="70"
-                                        type="linear"
-                                        format=".2f"
-                                        showGrid="true"
-                                    />
-                                    {charts}
-                                </ChartRow>
-                            </ChartContainer>
+                        <Resizable>{chartContainer}
                         </Resizable>
                     </div>
                 </div>
-            </div>
-        );
+            </div>;
+    //console.log("rendered: ", result);
+    return result;
   }  
 
   componentDidUpdate(prevProps) {
@@ -263,15 +255,31 @@ export default class NMC extends React.Component {
       });
       return;
     }
+    else {
+      let nmdId = null;
+      try {
+        nmdId = newConnStr.substring(newConnStr.indexOf("net/")+4,newConnStr.indexOf("?"));
+        console.log("parsed nmdId from storage connection string: " + nmdId);
+        this.setState((ps)=>{
+          ps.nmdId = nmdId;
+          ps.apiToken = newConnStr;
+          return ps;
+        });
+      }
+      catch(e) {
+        console.error("couldnt parse nmdId from storage connection string:", e);
+        this.setState((ps)=>{
+          ps.storageConnectionStatus = "n/a";
+          return ps;
+        });
+        return;
+      }
+    }
     let blobServiceClient = null;
     try {
       console.log("opening connection to storage...");
-      let url = newConnStr.substring(0,newConnStr.indexOf("?"));
-      let token = newConnStr.substring(newConnStr.indexOf("?")+1,newConnStr.length);
-      //blobServiceClient = new BlobServiceClient(url,token);
-      blobServiceClient = new BlobServiceClient(newConnStr);
       
-      let containerClient = await blobServiceClient.getContainerClient("nmpi-test");
+      let containerClient = new ContainerClient(newConnStr);
       console.log("Successfully connected to Storage!");
       this.setState((ps)=>{
         ps.storageConnectionStatus = "up";
@@ -294,6 +302,9 @@ export default class NMC extends React.Component {
     for(let i = 2;i < dataLabels.length;i++) {
       let label = dataLabels[i];
       dataMap[label] = l[i];
+      dataMap[label+"_a5m"] = l[i+dataLabels.length];
+      dataMap[label+"_a1h"] = l[i+dataLabels.length*2];
+      dataMap[label+"_attn"] = l[i+dataLabels.length*3];
       dataMap.ee[label] = Math.pow(10,parseFloat(l[i])/10.0);
     }
     //{"LeqA":l[2],"LeqB":l[3],"LeqC":l[4],"LeqZ":l[5],"Leq6.3Hz":l[6],"Leq8Hz":l[7],"Leq10Hz":l[8],"Leq12.5Hz":l[9],"Leq16Hz":l[10],"Leq20Hz":l[11],"Leq25Hz":l[12],"Leq31.5Hz":l[13],"Leq40Hz":l[14],"Leq50Hz":l[15],"Leq63Hz":l[16],"Leq80Hz":l[17],"Leq100Hz":l[18],"Leq125Hz":l[19],"Leq160Hz":l[20],"Leq200Hz":l[21],"Leq250Hz":l[22],"Leq315Hz":l[23],"Leq400Hz":l[24],"Leq500Hz":l[25],"Leq630Hz":l[26],"Leq800Hz":l[27],"Leq1kHz":l[28],"Leq1.25kHz":l[29],"Leq1.6kHz":l[30],"Leq2kHz":l[31],"Leq2.5kHz":l[32],"Leq3.15kHz":l[33],"Leq4kHz":l[34],"Leq5kHz":l[35],"Leq6.3kHz":l[36],"Leq8kHz":l[37],"Leq10kHz":l[38],"Leq12.5kHz":l[39],"Leq16kHz":l[40],"Leq20kHz":l[41]};
@@ -337,6 +348,7 @@ export default class NMC extends React.Component {
       // open next fileCreatedDate
       currentFileName = this.getFileName(currentStartTime);
       let currentBlobClient = await this.state.containerClient.getBlobClient(currentFileName);
+      let readFile = true;
       //let res = await currentBlobClient.exists();
       //console.log("exists: " + JSON.stringify(res,null,2));
       console.log("attempting to download '" + currentFileName + "'");
@@ -351,48 +363,70 @@ export default class NMC extends React.Component {
           this.updating = false;
           return;
         }
-        if(e.statusCode == "409") {
+        else if(e.statusCode == "409") {
           console.log("blob modified while being read");
-          this.upadting = false;
+          this.updating = false;
           return;
         }
-        console.log("download failed: " + JSON.stringify(e));
-        break;
-      }
-      //console.log("response: '" + JSON.stringify(blobResponse) + "'");
-      let body = await blobResponse.blobBody;
-      const fileReader = new FileReader();
-      data = await new Promise((resolve, reject) => {
-        fileReader.onloadend = (ev) => {
-          resolve(ev.target.result);
-        };
-        fileReader.onerror = reject;
-        fileReader.readAsText(body);
-      });
-      console.log("downloaded " + currentFileName + ", " + data.length + " bytes");
-      // now add the data to window
-      //console.log("data: " + data);
-      let lines = data.split("\r\n").filter((x)=>{return x.length > 0;});
-      console.log("data has " + lines.length + " lines");
-      for(let l of lines) {
-        let timeStr = l.substring(0,l.indexOf("\t"));
-        //console.log("line timeStr='" + timeStr + "'");
-        let lineTime = new Date(timeStr+".000Z");
-        //console.log("line time " + lineTime);
-        if(this.state.dataWindow.type != "rolling" && lineTime.getTime() > this.state.dataWindow.windowEndTime.getTime())break;
-        if(lineTime.getTime() >= this.state.dataWindow.windowStartTime.getTime()) {
-          //console.log("adding line to data");
-          this.applyDataLineToWindow(events, lineTime,l); // converts l, lineTime to TimeEvent including energy eqivalents
-                                                          // and adds to events
+        else if(e.statusCode == "404") {
+          console.log("blob not existing");
+          readFile = false;
+        }
+        else {
+          console.log("download failed: " + JSON.stringify(e));
+          break;
         }
       }
-      console.log("after applying " + currentFileName + " data, eventBuffer with new events now " + events.length + " entries long");
+      if(readFile) {
+        //console.log("response: '" + JSON.stringify(blobResponse) + "'");
+        let body = await blobResponse.blobBody;
+        const fileReader = new FileReader();
+        data = await new Promise((resolve, reject) => {
+          fileReader.onloadend = (ev) => {
+            resolve(ev.target.result);
+          };
+          fileReader.onerror = reject;
+          fileReader.readAsText(body);
+        });
+        console.log("downloaded " + currentFileName + ", " + data.length + " bytes");
+        // now add the data to window
+        //console.log("data: " + data);
+        this.addDataToEvents(data,events);
+        console.log("after applying " + currentFileName + " data, eventBuffer with new events now " + events.length + " entries long");
+      }
       // set to next full hour
       console.log("currentStartTime = " + currentStartTime + ", forwarding to next full hour");
       currentStartTime = new Date(Math.floor(currentStartTime.getTime()/3600/1000)*3600*1000+3600*1000);
       console.log("currentStartTime now " + currentStartTime);
     }
-    let newestEventTime = new Date(events[events.length-1].timestamp());
+    this.setState((ps)=> {
+      ps.dataWindow.lastBytesRead = (currentFileName==cfn?bytesRead:0)+data.length;
+      ps.dataWindow.lastFileRead = currentFileName;
+      return ps;
+    });
+    this.addEvents(events);
+  }
+  
+  addDataToEvents(data,events) {
+    let lines = data.split("\r\n").filter((x)=>{return x.length > 0;});
+    console.log("data has " + lines.length + " lines");
+    for(let l of lines) {
+      let timeStr = l.substring(0,l.indexOf("\t"));
+      //console.log("line timeStr='" + timeStr + "'");
+      let lineTime = new Date(timeStr+".000Z");
+      //console.log("line time " + lineTime);
+      if(this.state.dataWindow.type != "rolling" && lineTime.getTime() > this.state.dataWindow.windowEndTime.getTime())break;
+      if(lineTime.getTime() >= this.state.dataWindow.windowStartTime.getTime()) {
+        //console.log("adding line to data");
+        this.applyDataLineToWindow(events, lineTime,l); // converts l, lineTime to TimeEvent including energy eqivalents
+                                                        // and adds to events
+      }
+    }
+  }
+  
+  addEvents(events) {
+    let newestEventTime = new Date();
+    if(events.length>0)newestEventTime = new Date(events[events.length-1].timestamp());
     console.log("update reached windowEnd, lastRecord time = " + newestEventTime + ", now aggregating new data");
     let newWindowEndTime = new Date(Math.floor(newestEventTime.getTime()/1000)*1000+1000);
     if(this.state.dataWindow.type == "rolling" && newWindowEndTime.getTime()+1000 < new Date().getTime()) {
@@ -412,9 +446,7 @@ export default class NMC extends React.Component {
     }
     else {
       // init window total energies
-      let dropEnergies = true;
       if( Object.keys(this.state.dataWindow.ee5m).length == 0) {
-        dropEnergies = false; // on the first pass no energies in window yet
         console.log("initializing 5m and 1h window total energies to 0.0 for all values");
         for(let i = 2; i < dataLabels.length;i++) {
           ee1h[dataLabels[i]] = ee5m[dataLabels[i]] = 0.0;
@@ -422,7 +454,13 @@ export default class NMC extends React.Component {
       }
 
       events = this.state.events.concat(events);
-      
+      let prevTs = null;
+      for(let i = 0;i < events.length; i++) {
+        if(prevTs && events[i].timestamp() <= prevTs) {
+          console.error("non chronological: i = " + i + ", prevTs = " +new Date(prevTs) + ", current = " + new Date(events[i].timestamp()));
+        }
+        prevTs = events[i].timestamp();
+      }
       // iterate the new events and aggregate each
       let nextAggregateIdx = this.state.dataWindow.nextAggregateIdx;
       console.log("data aggregation starting at index " + (nextAggregateIdx) + " out of total " + events.length + " events");
@@ -433,39 +471,36 @@ export default class NMC extends React.Component {
 
         // slide the 5m window forward until and substract energies from now out of window events
         while(ts - events[idx5m].timestamp() > length5msecs*1000) {
-          if(dropEnergies) {
-            console.log("dropping " + idx5m + " (" + new Date(events[idx5m].timestamp()) + " from 5m window...");
-            let data = events[idx5m].toJSON();
-            for(let j = 2; j < dataLabels.length;j++) {
-              let lbl = dataLabels[j];
-              try {
-                ee5m[lbl] -= data.data.ee[lbl];
-              }
-              catch(e) {
-                console.log("lbl = " + lbl + ", data = " + JSON.stringify(data) + ", ee5m = " + JSON.stringify(ee5m,null,2));
-                throw e;
-              }
-            }       
+          let data = events[idx5m].toJSON();
+          //console.log("dropping " + idx5m + " (" + new Date(events[idx5m].timestamp()) + " from 5m window: ee5m so far: " + JSON.stringify(ee5m) + ", data.ee = " + JSON.stringify(data.data.ee));
+          for(let j = 2; j < dataLabels.length;j++) {
+            let lbl = dataLabels[j];
+            try {
+              //console.log("subtracting " + data.data.ee[lbl] + " from ee5m[" + lbl + "] = " + ee5m[lbl] + ", adding " + events[nextAggregateIdx].toJSON().data.ee[lbl]);
+              ee5m[lbl] -= data.data.ee[lbl];
+            }
+            catch(e) {
+              console.log("lbl = " + lbl + ", data = " + JSON.stringify(data) + ", ee5m = " + JSON.stringify(ee5m,null,2));
+              throw e;
+            }
           }
           idx5m++;            
         }
         // slide the 1h window forward until and substract energies from now out of window events
-        console.log("" + nextAggregateIdx + ": going to push idx1h  forward from " + idx1h + ", event.length = " + events.length);
+        //console.log("" + nextAggregateIdx + ": going to push idx1h  forward from " + idx1h + ", event.length = " + events.length);
         while(ts - events[idx1h].timestamp() > length1hsecs*1000) {
-          if(dropEnergies) {
-            console.log("dropping " + idx1h + " (" + new Date(events[idx1h].timestamp()) + " from 1h window...");
-            let data = events[idx1h].toJSON();
-            for(let j = 2; j < dataLabels.length;j++) {
-              let lbl = dataLabels[j];
-              try {
-                ee1h[lbl] -= data.data.ee[lbl];
-              }
-              catch(e) {
-                console.log("lbl = " + lbl + ", data = " + JSON.stringify(data) + ", ee1h = " + JSON.stringify(ee1h,null,2));
-                throw e;
-              }
-            } 
-          }
+          //console.log("dropping " + idx1h + " (" + new Date(events[idx1h].timestamp()) + " from 1h window...");
+          let data = events[idx1h].toJSON();
+          for(let j = 2; j < dataLabels.length;j++) {
+            let lbl = dataLabels[j];
+            try {
+              ee1h[lbl] -= data.data.ee[lbl];
+            }
+            catch(e) {
+              console.log("lbl = " + lbl + ", data = " + JSON.stringify(data) + ", ee1h = " + JSON.stringify(ee1h,null,2));
+              throw e;
+            }
+          } 
           idx1h++;  
           if(!events[idx1h]) {
             console.log("idx1h = " + idx1h + ", no event on that idx! events.length = " + events.length);
@@ -480,19 +515,21 @@ export default class NMC extends React.Component {
           initialValue5m[dataLabels[j]]=0.0;
           initialValue1h[dataLabels[j]]=0.0;
         }
-        let cee5m = events.slice(idx5m, nextAggregateIdx).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
+        /*let cee5m = events.slice(idx5m, nextAggregateIdx+1).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
           for(let j = 2; j < dataLabels.length;j++) {    
             pv[dataLabels[j]]+=Math.pow(10,te.data[dataLabels[j]]/10.0); // add all un-log-ed values
           }
           return pv;
         },initialValue5m);
-        let cee1h = events.slice(idx1h, nextAggregateIdx).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
+        let cee1h = events.slice(idx1h, nextAggregateIdx+1).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
           for(let j = 2; j < dataLabels.length;j++) {    
             pv[dataLabels[j]]+=Math.pow(10,te.data[dataLabels[j]]/10.0); // add all un-log-ed values
           }
           return pv;
         },initialValue1h);
+        */
         //console.log("cee5m["+nextAggregateIdx+"]=" + JSON.stringify(cee5m));
+        let stop = false;
         for(let j = 2; j < dataLabels.length;j++) {
           let lbl = dataLabels[j];
           newData.data[lbl] = parseFloat(newData.data[lbl]);
@@ -505,47 +542,53 @@ export default class NMC extends React.Component {
           //if(lbl == "LeqA")console.log("10*Math.log10(ee5m[LeqA]/300)= 10*Math.log10(" + ee5m[lbl]+ "/300) = 10*" + Math.log10(ee5m[lbl]/300));
           //newData.data[lbl+"_1h"] = 10*Math.log10(ee1h[lbl]/(length1hsecs));
           
-          /*newData[lbl+"_5m"] = 10*Math.log10(events.slice(idx5m, nextAggregateIdx).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
-            return pv+Math.pow(10,te.data[lbl]/10.0); // add all un-log-ed values
-          },0.0)/length5msecs)
-          newData[lbl+"_1h"] = 10*Math.log10(events.slice(idx1h, nextAggregateIdx).map(x=>{return x.toJSON();}).reduce((pv,te)=>{
-            return pv+Math.pow(10,te.data[lbl]/10.0); // add all un-log-ed values
-          },0.0)/length1hsecs)
-          */
-          newData.data[lbl+"_5m"] = 10*Math.log10(cee5m[lbl]/length5msecs);
-          newData.data[lbl+"_1h"] = 10*Math.log10(cee1h[lbl]/length1hsecs);
+          newData.data[lbl+"_5m"] = 10*Math.log10(ee5m[lbl]/length5msecs);
+          /*if(Math.abs(cee5m[lbl] - ee5m[lbl]) > 0.5) {
+            console.log("idx  " + nextAggregateIdx + ": ee5m["+lbl+"] != cee5m["+lbl+"]: " + JSON.stringify(cee5m) + ", ee5m = " + JSON.stringify(ee5m));
+            clearInterval(this.interval);
+            stop = true;
+            break;
+          }*/
+          newData.data[lbl+"_1h"] = 10*Math.log10(ee1h[lbl]/length1hsecs);
+          /*if(Math.abs(cee1h[lbl] - ee1h[lbl]) > 0.5) {
+            console.log("idx  " + nextAggregateIdx + ": ee1h["+lbl+"] != cee1h["+lbl+"]: " + JSON.stringify(cee1h) + ", ee5m = " + JSON.stringify(ee1h));
+            clearInterval(this.interval);
+            stop = true;
+            break;
+          }*/
         }          
         //console.log("newData after adding window aggregate= ", newData);
         //console.log("aggregating "  + nextAggregateIdx + " 5m start = " + idx5m + ", size = " +(nextAggregateIdx-idx5m) + " bins, " + (ts-events[idx5m].timestamp()) + " ms, current ee total = " + ee5m["LeqA"] + ", ee in currentLine = " + newData.data.ee["LeqA"]);
         //console.log("aggregating "  + nextAggregateIdx + " 1h start = " + idx1h + ", size = " +(nextAggregateIdx-idx1h) + " bins, " + (ts-events[idx1h].timestamp()) + " ms, current ee total = " + ee1h["LeqA"] + ", ee in currentLine = " + newData.data.ee["LeqA"]);
 
         events[nextAggregateIdx] = new TimeEvent(newData.time, newData.data);
-        console.log("aggregated " + nextAggregateIdx + ": idx5m =" + idx5m + ", length = " +(events[nextAggregateIdx].timestamp()-events[idx5m].timestamp())/1000 +"s, idx1h = " + idx1h + ", length = " + (events[nextAggregateIdx].timestamp()-events[idx1h].timestamp())/1000);
+        //console.log("aggregated " + nextAggregateIdx + ": idx5m =" + idx5m + ", length = " +(events[nextAggregateIdx].timestamp()-events[idx5m].timestamp())/1000 +"s, idx1h = " + idx1h + ", length = " + (events[nextAggregateIdx].timestamp()-events[idx1h].timestamp())/1000);
+        if(stop) break;
       }
 
       console.log("aggregation done, next idx = " + nextAggregateIdx);
       
       // now discard values out of data window
       try {
-      while(events[0].timestamp() < newWindowStartTime.getTime()) {
-        if(idx5m == 0) {
-          console.log("skip discard pre window events because still in 5m window: " + new Date(events[0].timestamp()));
-          break;
+        while(events[0].timestamp() < newWindowStartTime.getTime()) {
+          if(idx5m == 0) {
+            console.log("skip discard pre window events because still in 5m window: " + new Date(events[0].timestamp()));
+            break;
+          }
+          if(idx1h == 0) {
+            console.log("skip discard pre window events because still in 1h window: " + new Date(events[0].timestamp()));
+            break;
+          }
+          console.log("discard pre window event " + new Date(events[0].timestamp()) + " idx1h = " + idx1h);
+          if(nextAggregateIdx == 0) {
+            console.error("nextAggregateIdx < 0: " + nextAggregateIdx );
+            return;
+          }
+          nextAggregateIdx--;
+          idx5m--;
+          idx1h--;
+          events.shift();
         }
-        if(idx1h == 0) {
-          console.log("skip discard pre window events because still in 1h window: " + new Date(events[0].timestamp()));
-          break;
-        }
-        console.log("discard pre window event " + new Date(events[0].timestamp()) + " idx1h = " + idx1h);
-        if(nextAggregateIdx == 0) {
-          console.error("nextAggregateIdx < 0: " + nextAggregateIdx );
-          return;
-        }
-        nextAggregateIdx--;
-        idx5m--;
-        idx1h--;
-        events.shift();
-      }
       }
       catch(e) {
         console.log("events[0] = " + JSON.stringify(events[0],null,2));
@@ -557,8 +600,6 @@ export default class NMC extends React.Component {
         ps.dataWindow.status = "loaded";
         ps.dataWindow.windowEndTime = newWindowEndTime;
         ps.dataWindow.windowStartTime = newWindowStartTime;
-        ps.dataWindow.lastFileRead = currentFileName;
-        ps.dataWindow.lastBytesRead = (currentFileName==cfn?bytesRead:0)+data.length;
         ps.events = events;
         ps.dataWindow.idx5m = idx5m;
         ps.dataWindow.idx1h = idx1h;
@@ -583,9 +624,40 @@ export default class NMC extends React.Component {
     console.log("storage connected, now loading initial data");
     
     await this.initializeDataWindow();
-    console.log("data winodw loaded.");
+    console.log("data winodw loaded. nmdId = " + this.state.nmdId + ". initializing NMS websocket keep-alive...");
     
     const increment = sec;
+    this.interval = setInterval(async ()=>{
+      if(this.nmdClient) { 
+        if( (new Date().getTime() - this.lastPing.getTime()) > 3000) {
+          console.log("" + new Date() + ": found stale server connection not pinged since " + this.lastPing + ", leaving, then resetting nmdClient and scheduling reconnect...");
+          this.sendRemoteCommand({command:"leave",params:[false]});           
+          this.nmdClient.close();
+          this.nmdClient = null;
+          if(this.state.nmdId) {
+            console.log("setting timer for reconnect attempt...");
+            setTimeout(this.joinNMS.bind(this, this.state.nmdId),1000);
+          }
+          return;
+        }
+        else {
+          //console.log("" + new Date() + ": sending ping to server");
+          this.sendRemoteCommand({command:"clientPing",params:[]});
+        }
+      }
+      else {
+        this.nmdClient = null;
+        if(this.state.nmdId) {
+          clearTimeout();
+          console.log("no nmd client, setting time out to re connect to nmd " + this.state.nmdId ,true);
+          // find out whether the game exists on server
+          setTimeout(this.joinNMS.bind(this, this.state.nmdId),1000);
+        }
+      }
+    },2000);
+  
+
+  /*
     this.interval = setInterval(async () => {
             if(this.state.storageConnectionStatus != "up") return;
             if(this.state.dataWindow.type != "rolling") {
@@ -604,60 +676,9 @@ export default class NMC extends React.Component {
             let newMin = this.state.minValue;
             let newMax = this.state.maxValue;
 
-            //while(events.length >= newEvents.length) {
-            //  newEvents.push(new Ring(3600*3));
-            //}
-            /*
-            for(let i = 0 ; i < events.length; i++) {
-              //console.log("pushing event to series " + i);
-              //newEvents[i].push(events[i]);
-              //newMin = isNaN(newMin)?events[i].toJSON().data.value:Math.min(events[i].toJSON().data.value, newMin);
-              //newMax = isNaN(newMax)?events[i].toJSON().data.value:Math.max(events[i].toJSON().data.value, newMax);
-              if(i == 0) {
-                // Let our aggregators process the event
-                //console.log("newEvents[i]: " + JSON.stringify(newEvents[i]));
-                let window5s = [];
-                let windowStart = new Date(new Date().getTime()-5500);
-                let bevts = newEvents[i].toArray();
-                //console.log("bevts: " + JSON.stringify(bevts));
-                let beptr = bevts.length-1;
-                let e = null;
-                while(bevts.length > 0 && beptr > -1 && (e = bevts[beptr--]).toJSON().time > windowStart) {
-                  window5s.push(e);
-                  //console.log("e: " + JSON.stringify(e));
-                }
-                //console.log("beptr = " + beptr);
-                if(beptr >= 0 && bevts.length > 0) {
-                  console.log("discarding events before " + bevts[beptr].toJSON().time);
-                }
-                //console.log("window: " + JSON.stringify(window5s));
-                let avg = 0;
-                let count = window5s.length;
-                //console.log("count: " + count);
-                let avgTime = -1;
-                if(window5s.length >0) {
-                  avgTime = window5s[0].toJSON().time;
-                }
-                //console.log("avgTime = " + avgTime);
-                for(let e of window5s) {
-                  avg += Number(e.toJSON().data.value);
-                  //newEvents[i].push(e);
-                }
-                if(count >0) {
-                  avg /= count;
-                  //console.log("avg: " + avg);
-                  avg *= 100;
-                  avg = Math.trunc(avg)/100.0;
-                  let navg = new TimeEvent(avgTime, avg);
-                  //console.log("navg: " + JSON.stringify(navg.toJSON()));
-                  this.state.ntcAggregate.push(navg);
-                }
-              }
-            }
-            */
             this.setState({ time: new Date(), minValue: newMin,maxValue: newMax });
-
         }, rate);
+    */
   }
 
   componentWillUnmount() {
@@ -670,4 +691,139 @@ export default class NMC extends React.Component {
     this.setState(newState);
     //console.log("updateWindowDimensions: width=" + newState.width + ", height=" + newState.height);
   }
+  
+  sendRemoteCommand(cmdJson) {
+    if(this.nmdClient) {
+      try {
+        this.nmdClient.send(JSON.stringify(cmdJson));
+      }
+      catch(e) {
+        console.error(e);
+      }
+    }
+    else {
+      console.error("cannot send command " + cmdJson.command + " to server: no nms client");
+    }
+  }
+
+  async joinNMS(nmdId) {
+    console.log("joinNMS called, retry = " + (this.state.retry+1));
+    if(!nmdId) {
+      console.log("need both nmdId to join NMS.");
+      return;
+    }
+    if(this.state.joinTime && new Date().getTime()-this.state.joinTime < 5000) {
+      console.log("previous join attempt not timed out, skipping...");
+      return;
+    }
+    this.state.joinTime = new Date();
+    console.log("trying to join NMS " + nmdId + "...");
+    this.setState(ps=> {
+      ps.retry = ps.retry+1;
+      ps.nmdId = nmdId;
+      ps.uiState.status = "auto";
+      ps.uiState.message = "joining nms...";
+      return ps;
+    });
+    let successfulJoin = false;
+    console.log("join NMS called, nmdId = " + nmdId);
+    try {
+      this.nmdClient = new WebSocket('ws'+(this.state.https?"s":"")+'://'+this.state.serverAddress+':'+this.state.port+'/api/nmds/' + nmdId + '/join?token=' + this.state.apiToken+ "&mode=sink");
+    }
+    catch(err) {
+      console.error(err);
+    }
+    this.nmdClient.onerror = (event) => {
+      console.log("nmdClient error: ", event);
+    }
+    
+    this.lastPing = new Date(); // start with stale date
+    console.log("" + new Date + ": created ws");
+    this.nmdClient.onopen = (event) => {
+      //console.log("event = " + JSON.stringify(event));
+      console.log("" + new Date() + ": webSocket successfully opened, adding ping/pong timer");
+      this.lastPing = new Date(); // start with stale date
+    };
+    this.nmdClient.onmessage = (messageEvent) => {
+      this.lastPing = new Date(); // start with stale date
+      let message = messageEvent.data;
+      let messageObj = null;
+      try {
+        messageObj = JSON.parse(message);
+      }
+      catch(e) {
+        // treat as data rows
+        if(message.indexOf("\t") < 20) {
+          messageObj = {command:"newData",params:[message]};
+        }
+        else {
+          console.error("could not parse NMS message: '" + message + "'",e);
+        }
+      }
+      let trace = true;
+      if(messageObj.command) {
+        //console.log("received server command on gameClient[" + this.gameClientId + "]: " + JSON.stringify(messageObj));
+        //console.log("received server command: " + messageObj.command);
+        switch(messageObj.command) {
+          case "id":
+            this.nmdClientId = messageObj.params[0];
+            this.serverVersion = messageObj.params[1];
+            successfulJoin = true;
+            break;
+          case "newData":
+            console.log("received new data from NMS: " + messageObj.params[0]);
+            let events = [];
+            if(this.state.dataWindow.status == "loaded") {
+              this.addDataToEvents(messageObj.params[0], events);
+              this.addEvents(events);
+            }
+            break;
+          case "pong":
+            //console.log("" + new Date() + ": received pong, updating lastPing");
+            this.lastPing = new Date();
+            break;
+          default:
+            console.log("command not implemented",true);
+        }
+      }
+      else if(messageObj.error) {
+        console.log("received server error message: " + messageObj.error);
+        console.log("received server error!");
+        this.setState(ps=> {
+          ps.uiState.status = "running";
+          ps.uiState.message = null;
+          ps.uiState.modal="message";
+          ps.uiState.modalParam="Server error: " + messageObj.error;
+          return ps;
+        });
+        return;
+      }
+      else {
+        console.error("received unexpected data: " + message);
+        return;
+      }
+    };
+    let timeout = 5000;
+    let startTime = new Date().getTime();
+    while(!successfulJoin && new Date().getTime() - startTime < timeout) {
+      await sleep(100);
+    }
+    if(successfulJoin) {
+      console.log("joined nmd successfully, setting nmdId!");
+      this.setState(ps=> {
+        ps.uiState.status = "running";
+        ps.uiState.message = null;
+        ps.nmdId = nmdId;
+        return ps;
+      });
+      if(this.state.dataWindow.status == "loaded" && this.state.dataWindow.type =="rolling") {
+        let syncStart = new Date(this.state.events[this.state.events.length-1].timestamp()).toISOString().substring(0,19);
+        console.log("sending sync command to NMS to start sending data for rolling window from " + syncStart);
+        this.sendRemoteCommand({command:"sync",params:[syncStart]});
+      }
+      else {
+        console.log("skip asking NMS to sync data since state is not loaded AND rolling");
+      }
+    }
+  }  
 }
