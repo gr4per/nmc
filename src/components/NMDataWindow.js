@@ -125,15 +125,17 @@ export default class NMDataWindow {
    * and update the data window end time to point to newest event passed or NOW
    * and the window start time based on duration
    * Will also discard all previous events in the window that have moved before start time
+   * 
+   * returns updated windowState or null if nothing was changed
    */
   addEvents(events) {
     if(!events || events.length <1) {
       console.log("skipping addEvents because no events passed.");
-      return;
+      return null;
     }
     if(this.state.type != "rolling" && events[0].timestamp().getTime() > this.state.windowEndTime.getTime()) {
       console.log("skipping add events as oldest event incoming is newer than window end of fix window.");
-      return;
+      return null;
     }
     let newestEventTime = new Date();
     if(events.length>0)newestEventTime = new Date(events[events.length-1].timestamp());

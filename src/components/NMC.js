@@ -128,7 +128,7 @@ export default class NMC extends React.Component {
       port:443,
       uiState:{status:"auto",message:"loading..."}
     };
-    this.dataWindow = new NMDataWindow(null, defaultLength,{},this.state.visibleTS);    
+    this.dataWindow = new NMDataWindow(new Date(), defaultLength,{},this.state.visibleTS);    
     this.state.dataWindow = this.dataWindow.state;
   }
 
@@ -253,7 +253,7 @@ export default class NMC extends React.Component {
       },
       "s1h":{
             normal: {
-                stroke: "olive",
+                stroke: "lightgreen",
                 fill:"none",
                 strokeDasharray:"20,10",
                 strokeWidth:3,
@@ -308,6 +308,7 @@ export default class NMC extends React.Component {
     
    
     const eventSeries = new TimeSeries({ name: "raw", events: this.dataWindow.events });
+    console.log("this.state.dataWindow: " + JSON.stringify(this.state.dataWindow));
     const timeRange = new TimeRange(this.state.dataWindow.windowStartTime, this.state.dataWindow.windowEndTime);
     
     const dateStyle = {
@@ -354,10 +355,10 @@ export default class NMC extends React.Component {
                                     />
                                     {axis}
                                     <Charts>
-                                      <LineChart style={generateLineStyle(el)} columns={[el,el+"_5m",el+"_a5m",el+"_1h", el+"_a1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
+                                      <LineChart style={generateLineStyle(el)} columns={[el,el+"_a5m",el+"_a1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
                                       <LineChart style={generateLineStyle(el)} columns={[el+"_attn"]} axis="attn" series={eventSeries} interpolation="curveLinear"/>
                                       <Baseline axis="y" style={{line:{strokeWidth:2,stroke:"red"},label:{fill:"red"}}} value={threshold} label="Threshold" />
-                                      <EventChart series={
+                                      <EventChart size="10" style={trafficLightEventStyleCB} series={
                                           new TimeSeries({ 
                                             name: "trafficLightEvents", 
                                             events: (this.dataWindow.thresholdEvents[el] && this.dataWindow.thresholdEvents[el].length > 0)?this.dataWindow.thresholdEvents[el].map(e=>{
@@ -367,7 +368,7 @@ export default class NMC extends React.Component {
                                               )
                                             }):[]
                                           })
-                                        } style={trafficLightEventStyleCB} label={e => {return ""+e.get("leq") + "dB";}} />
+                                        } label={e => {return ""+e.get("leq") + "dB";}} />
                                     </Charts>
                                 </ChartRow>;
                                 })
@@ -378,11 +379,11 @@ export default class NMC extends React.Component {
                 <GlassPane uiState={this.state.uiState} style={{color:"white",backgroundColor:"grey"}}/>
                 <div className="row">
                     <div className="col-md-8">
-                        <span style={dateStyle}>{new Date().toString()}</span>
+                        <span style={dateStyle}>Noise Monitoring Client {new Date().toString()}, gr4per solutions</span>
                     </div>
                     <div className="col-md-8">
                         <div style={{"display":"flex","flexDirection":"row","justifyContent":"space-between","width":"100%","fontSize":"32pt","color":"white"}}>
-                          <div>Noise Monitoring Client</div>
+                          <div>{this.remoteConfig?this.remoteConfig.venue:"Unknown venue"} {this.remoteConfig?this.remoteConfig.position:"Unknown position"}</div>
                           <div style={{display:"flex",flexDirection:"row"}}>
                             <div style={{"backgroundColor":"inherit", "display":"flex","flexDirection":"column","justifyContent":"space-around"}}><Select styles={customSelectStyles} onChange={this.setWindowDuration.bind(this)} defaultValue={windowDurationOptions[0]} value={windowDurationOptions.find(el=>{ return el.value == this.state.windowLengthMillis;})} options={windowDurationOptions}/></div>
                             <div style={{"backgroundColor":"inherit", "display":"flex","justifyContent":"space-around"}}><DatePicker filterDate={(d)=>{return d.getTime() < new Date().getTime()}} dateFormat="yy/MM/d HH:mm" showTimeSelect placeholderText="NOW" isClearable={true} selected={this.state.date} onChange={this.setTimeRange.bind(this)}/></div>
@@ -522,7 +523,7 @@ export default class NMC extends React.Component {
     console.log("init window, setting length = " + length + " to cover time " + windowStartTime + " - " + windowEndTime);
     let dataWindowThresholds = {};
     Object.keys(remoteConfig.bandConfig).map((el,idx)=>{dataWindowThresholds[el] = remoteConfig.bandConfig[el].limit1h;});
-    console.log("dataWindowThresholds = " + JSON.stringify(dataWindowThresholds));
+    console.log("initializeDataWindow:  dataWindowThresholds = " + JSON.stringify(dataWindowThresholds));
     this.dataWindow = new NMDataWindow(startTime, length, dataWindowThresholds, this.state.visibleTS);
     this.setState((ps)=> {
       ps.dataWindow = this.dataWindow.state;
@@ -643,13 +644,19 @@ export default class NMC extends React.Component {
       });
     }
 
-    this.setState((ps)=> {
-      ps.dataWindow = newState;
-      ps.uiState.status = "running";
-      ps.uiState.message = "";
-      ps.uiState.gameStatus == "running";
-      return ps;
-    });
+    if(newState) {
+      this.setState((ps)=> {
+        ps.dataWindow = newState;
+        console.log("updating dataWindow to new state after event addition");
+        ps.uiState.status = "running";
+        ps.uiState.message = "";
+        ps.uiState.gameStatus == "running";
+        return ps;
+      });
+    }
+    else {
+      console.log("data window state not changed by addEvents, skipping state update");
+    }
     
     this.updating = false;
   }
