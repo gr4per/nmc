@@ -128,6 +128,9 @@ export default class NMC extends React.Component {
       port:443,
       uiState:{status:"auto",message:"loading..."}
     };
+    let storedVisibleTS = localStorage.getItem("visibleTS");
+    if(storedVisibleTS)
+      this.state.visibleTS = JSON.parse(storedVisibleTS);
     this.dataWindow = new NMDataWindow(new Date(), defaultLength,{},this.state.visibleTS);    
     this.state.dataWindow = this.dataWindow.state;
   }
@@ -210,6 +213,72 @@ export default class NMC extends React.Component {
     });
 
     await this.initializeDataWindow(this.remoteConfig, date, windowLengthMillis);
+  }
+  
+  toggleSettings() {
+    if(this.state.uiState.status == "auto") {
+      console.log("cannot toggle menu in auto state");
+      return;
+    }
+    else if(this.state.uiState.status == "modal") {
+      console.log("uiState already modal: " + this.state.uiState.modal);
+      return;
+    }
+    this.setState(ps=> {
+      ps.uiState.status = "modal";
+      ps.uiState.modal = "settings";
+      ps.uiState.modalCallback = this.applySettings.bind(this);
+      return ps;
+    });
+  }
+  
+  async applySettings(settings) {
+    console.log("applying new settings: " + settings);
+    let oldStorageConnectionString = localStorage.getItem("storageConnectionString");
+    if(settings.storageConnectionString != oldStorageConnectionString){
+      console.log("storageConnectionString changed.");
+      await this.connectToStorage(settings.storageConnectionString);
+      console.log("reloading page...");
+      window.location.reload(false);
+      return;
+    }
+    // now apply updated band settings
+    let newBands = [];
+    for(let nb of settings.visibleTS) {
+      if(this.state.visibleTS.indexOf(nb) == -1) {
+        console.log("adding band " + nb);
+        newBands.push(nb);
+      }
+    }
+    for(let ob of this.state.visibleTS) {
+      if(settings.visibleTS.indexOf(ob) == -1) {
+        console.log("removing band " + ob);
+      }
+    }
+    let date = this.state.date;
+    let windowLengthMillis = this.state.windowLengthMillis;
+    this.dataWindow.state.visibleBands = settings.visibleTS;
+    this.state.visibleTS = settings.visibleTS;
+    localStorage.setItem("visibleTS", JSON.stringify(settings.visibleTS));
+    if(newBands.length > 0) {
+      this.setState((ps)=> {
+        ps.uiState.status = "auto";
+        ps.uiState.message = "Loading data...";
+        return ps;
+      });
+
+      await this.initializeDataWindow(this.remoteConfig, date, windowLengthMillis);
+    }
+    else {
+      console.log("no additional bands, just updating state of visible bands");
+    }
+    this.setState((ps)=> {
+      ps.visibleTS = settings.visibleTS;
+      ps.dataWindow = this.dataWindow.state;
+      ps.uiState.status = "running";
+      ps.uiState.modal = null;
+      return ps;
+    });
   }
   
   render() {  
@@ -308,7 +377,7 @@ export default class NMC extends React.Component {
     
    
     const eventSeries = new TimeSeries({ name: "raw", events: this.dataWindow.events });
-    console.log("this.state.dataWindow: " + JSON.stringify(this.state.dataWindow));
+    //console.log("this.state.dataWindow: " + JSON.stringify(this.state.dataWindow));
     const timeRange = new TimeRange(this.state.dataWindow.windowStartTime, this.state.dataWindow.windowEndTime);
     
     const dateStyle = {
@@ -331,6 +400,8 @@ export default class NMC extends React.Component {
                                 let rowMin = isNaN(this.state.dataWindow.min[el])?25:this.state.dataWindow.min[el];
                                 let rowMax = isNaN(this.state.dataWindow.max[el])?100:this.state.dataWindow.max[el];
                                 let threshold = this.dataWindow.thresholds[el.substring(3,el.length)];
+                                let overhead = 5;
+                                if(threshold && rowMax < threshold+overhead) rowMax = threshold+overhead;
                                 let axis = <YAxis
                                         id="y"
                                         label={el}
@@ -339,7 +410,6 @@ export default class NMC extends React.Component {
                                         width="70"
                                         type="linear"
                                         format=".2f"
-                                        yScale={scaleLinear().domain([rowMin,rowMax]).range([trafficLightWidth,0])}
                                         showGrid={true}
                                     />;
                                 return <ChartRow key={"cr_"+el} height={trafficLightWidth}>
@@ -358,7 +428,7 @@ export default class NMC extends React.Component {
                                       <LineChart style={generateLineStyle(el)} columns={[el,el+"_a5m",el+"_a1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
                                       <LineChart style={generateLineStyle(el)} columns={[el+"_attn"]} axis="attn" series={eventSeries} interpolation="curveLinear"/>
                                       <Baseline axis="y" style={{line:{strokeWidth:2,stroke:"red"},label:{fill:"red"}}} value={threshold} label="Threshold" />
-                                      <EventChart size="10" style={trafficLightEventStyleCB} series={
+                                      <EventChart size={10} style={trafficLightEventStyleCB} series={
                                           new TimeSeries({ 
                                             name: "trafficLightEvents", 
                                             events: (this.dataWindow.thresholdEvents[el] && this.dataWindow.thresholdEvents[el].length > 0)?this.dataWindow.thresholdEvents[el].map(e=>{
@@ -376,7 +446,7 @@ export default class NMC extends React.Component {
                             </ChartContainer>;
 
     let result =<div>
-                <GlassPane uiState={this.state.uiState} style={{color:"white",backgroundColor:"grey"}}/>
+                <GlassPane applySettings={this.applySettings.bind(this)} settings={{storageConnectionString:localStorage.getItem("storageConnectionString"),visibleTS:this.state.visibleTS.slice(0, this.state.visibleTS.length),thresholds:this.dataWindow.thresholds}} uiState={this.state.uiState} style={{color:"white",backgroundColor:"grey"}}/>
                 <div className="row">
                     <div className="col-md-8">
                         <span style={dateStyle}>Noise Monitoring Client {new Date().toString()}, gr4per solutions</span>
@@ -387,6 +457,9 @@ export default class NMC extends React.Component {
                           <div style={{display:"flex",flexDirection:"row"}}>
                             <div style={{"backgroundColor":"inherit", "display":"flex","flexDirection":"column","justifyContent":"space-around"}}><Select styles={customSelectStyles} onChange={this.setWindowDuration.bind(this)} defaultValue={windowDurationOptions[0]} value={windowDurationOptions.find(el=>{ return el.value == this.state.windowLengthMillis;})} options={windowDurationOptions}/></div>
                             <div style={{"backgroundColor":"inherit", "display":"flex","justifyContent":"space-around"}}><DatePicker filterDate={(d)=>{return d.getTime() < new Date().getTime()}} dateFormat="yy/MM/d HH:mm" showTimeSelect placeholderText="NOW" isClearable={true} selected={this.state.date} onChange={this.setTimeRange.bind(this)}/></div>
+                            <div style={{"display":"flex", "flexDirection":"column", "justifyContent":"space-around"}}>
+                              <div onClick={this.toggleSettings.bind(this)} style={{paddingLeft:"8px",paddingRight:"8px",height:"36px",fontSize:"24px", marginLeft:"5px",fontWeight:"bold", color:"black", backgroundColor:"white"}}>{"\u2261"}</div>
+                            </div>
                           </div>
                         </div>
                     </div>
@@ -435,7 +508,7 @@ export default class NMC extends React.Component {
                                     {attn == null?"":<div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"Attn " + attn + " dB"}</div>}
                                   <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{(this.state.dataWindow.type == "rolling"?bandValue5m:bandMax5m) + " dB (5m" + (this.state.dataWindow.type == "rolling"?"":" max") + ")"}</div>
                                   <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{bandMax1h + " dB (1h max)"}</div>
-                                  <div style={{position:"absolute",width:trafficLightWidth,backgroundColor:"rgba(40,40,40,0.2)",bottom:"0px",height:""+(trafficLightWidth*(((lastRowEvent?lastRowEvent.data[el]:0)-rowMin)/(rowMax-rowMin)))+"px"}}/>
+                                  <div style={{position:"absolute",width:"10px",backgroundColor:"rgba(40,40,40,0.8)",right:"0px",bottom:"0px",height:""+(trafficLightWidth*(((lastRowEvent?lastRowEvent.data[el]:0)-rowMin)/(rowMax-rowMin)))+"px"}}/>
                                   <div style={{position:"absolute",height:"5px",width:trafficLightWidth,backgroundColor:"black",bottom:"0px"}}/>                                  
                                 </div>
                               })}

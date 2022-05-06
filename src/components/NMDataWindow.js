@@ -103,17 +103,19 @@ export default class NMDataWindow {
    * black if 1h over 1h limit
    */
   getColor(band, data) {
+    let bandThreshold = this.thresholds[band];
+    if(!bandThreshold) bandThreshold = 999;
     let lbl = "Leq" + band;
-    if(data[lbl+"_1h"]>this.thresholds[band]){
+    if(data[lbl+"_1h"]>bandThreshold){
       return "black";
     }
-    if(data[lbl+"_5m"]>this.thresholds[band]+3.0){
-      if(data[lbl+"_1h"]+3.0>this.thresholds[band]) {
+    if(data[lbl+"_5m"]>bandThreshold+3.0){
+      if(data[lbl+"_1h"]+3.0>bandThreshold) {
         return "red";
       }
       return "orange";
     }
-    if(data[lbl+"_5m"]>this.thresholds[band]){
+    if(data[lbl+"_5m"]>bandThreshold){
       return "yellow";
     }
     return "green";
@@ -258,7 +260,7 @@ export default class NMDataWindow {
           
           // map band to array of Event objects {startTime, endTime, totalEnergy, leq, color}
           let band = lbl.substring(3,lbl.length); // strip the Leq prefix
-          if(this.thresholds[band]) {
+          
             let tevts = this.thresholdEvents[lbl];
             if(tevts.length == 0 || this.getColor(band, newData.data) != tevts[tevts.length-1].color) {
               tevts.push({startTime:new Date(ts.getTime()-1000),endTime:ts,totalEnergy:newData.data[lbl], leq:10*Math.log10(newData.data[lbl]), color:this.getColor(band, newData.data)});
@@ -270,7 +272,7 @@ export default class NMDataWindow {
               currentEvent.totalEnergy+=newData.data[lbl];
               currentEvent.leq = 10*Math.log10(currentEvent.totalEnergy);
             }
-          }
+          
         }
 
         events[nextAggregateIdx] = new TimeEvent(newData.time, newData.data);
@@ -313,7 +315,9 @@ export default class NMDataWindow {
         console.log("error discarding window values. events[0] = " + JSON.stringify(events[0],null,2) + ", e: ", e);
       }
       console.log("dropped before window values and adjusted indexes. new data window range: " + newWindowStartTime + " - " + newWindowEndTime);
-      for(let lbl of Object.keys(this.thresholds).map(e=>{return "Leq"+e;})) {
+      
+      // drop old threshold events
+      for(let lbl of this.state.visibleBands) {
         let match = this.state.visibleBands.find(p=>{return p === lbl;});
         if(!match) {
           console.log("skipping band " + lbl + " because not in visibleBands: " + JSON.stringify(this.state.visibleBands) );
@@ -377,3 +381,5 @@ export default class NMDataWindow {
     return new Date(this.events[this.events.length-1].timestamp()).toISOString().substring(0,19);
   }
 }
+
+export {bands, NMDataWindow};
