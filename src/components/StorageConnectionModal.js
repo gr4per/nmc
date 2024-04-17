@@ -83,3 +83,5 @@ export default class StorageConnectionModal extends React.Component {
     </div>;
   }
 }
+
+export {TextEntry, StorageConnectionModal}
