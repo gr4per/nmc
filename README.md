@@ -15,3 +15,14 @@ This client reads the data from the storage account and allows
   ** red - certain breach of threshold extrapolated from 5m window
   ** black - threshold exceeded for last hour
   
+## Running it locally
+
+Build with npm run build
+
+Serve the dist directory using e.g. python -m http.server 8080
+
+Open localhost:8080/nmc.html in browser
+
+Enter storage connection string in settings and press ok, then reload
+
+Use developer tools in browser to interact with app/state referring via _game context var.

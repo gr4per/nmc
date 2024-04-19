@@ -114,6 +114,7 @@ export default class NMC extends React.Component {
         lastFileBytesRead:0
       },
       visibleTS: ["LeqA", "Leq40Hz", "Leq50Hz", "Leq63Hz", "Leq80Hz", "Leq100Hz"],
+      aggregatePast: true,
       startTime: new Date(),
       time: new Date(),
       events: new Array(0),
@@ -131,7 +132,12 @@ export default class NMC extends React.Component {
     let storedVisibleTS = localStorage.getItem("visibleTS");
     if(storedVisibleTS)
       this.state.visibleTS = JSON.parse(storedVisibleTS);
-    this.dataWindow = new NMDataWindow(new Date(), defaultLength,{},this.state.visibleTS);    
+    
+    let storedAggregatePast = localStorage.getItem("aggregatePast");
+    console.log("storedAggregatePast = "  + storedAggregatePast + ", === undefined: " + (storedAggregatePast === undefined) + ", false: " + (""+storedAggregatePast == "false"));
+    if((""+storedAggregatePast == "false") && !(storedAggregatePast === undefined))
+      this.state.aggregatePast = false;
+    this.dataWindow = new NMDataWindow(new Date(), defaultLength,{},this.state.visibleTS, this.state.aggregatePast);    
     this.state.dataWindow = this.dataWindow.state;
   }
 
@@ -233,7 +239,7 @@ export default class NMC extends React.Component {
   }
   
   async applySettings(settings) {
-    console.log("applying new settings: " + settings);
+    console.log("applying new settings: " + JSON.stringify(settings));
     let oldStorageConnectionString = localStorage.getItem("storageConnectionString");
     if(settings.storageConnectionString != oldStorageConnectionString){
       console.log("storageConnectionString changed.");
@@ -259,8 +265,11 @@ export default class NMC extends React.Component {
     let windowLengthMillis = this.state.windowLengthMillis;
     this.dataWindow.state.visibleBands = settings.visibleTS;
     this.state.visibleTS = settings.visibleTS;
+    let previousAggregatePast = this.state.aggregatePast;
+    this.state.aggregatePast = settings.aggregatePast;
     localStorage.setItem("visibleTS", JSON.stringify(settings.visibleTS));
-    if(newBands.length > 0) {
+    localStorage.setItem("aggregatePast", settings.aggregatePast);
+    if(newBands.length > 0 || settings.aggregatePast != previousAggregatePast) {
       this.setState((ps)=> {
         ps.uiState.status = "auto";
         ps.uiState.message = "Loading data...";
@@ -274,6 +283,7 @@ export default class NMC extends React.Component {
     }
     this.setState((ps)=> {
       ps.visibleTS = settings.visibleTS;
+      ps.aggregatePast = settings.aggregatePast;
       ps.dataWindow = this.dataWindow.state;
       ps.uiState.status = "running";
       ps.uiState.modal = null;
@@ -295,7 +305,7 @@ export default class NMC extends React.Component {
       },
       "c5m":{
             normal: {
-                stroke: "blue",
+                stroke: "yellow",
                 fill:"none",
                 strokeDasharray:"10,10",
                 strokeWidth:3,
@@ -392,7 +402,8 @@ export default class NMC extends React.Component {
     //console.log("ymin = " + ymin + ", ymax = " + ymax)
     let mostRecentEvent = eventSeries.atLast()?eventSeries.atLast():null;
     const chartHeight = Math.max(150,this.state.height-120);    
-    let trafficLightWidth = chartHeight/this.state.visibleTS.length;
+    let trafficLightHeight = chartHeight/this.state.visibleTS.length;
+    let trafficLightWidth = Math.min(trafficLightHeight, 300);
     let renderTime = new Date();
     let chartContainer = <ChartContainer timeRange={timeRange} width={this.state.width-trafficLightWidth}>
                               {this.state.visibleTS.map((el, idx)=> {
@@ -412,7 +423,7 @@ export default class NMC extends React.Component {
                                         format=".2f"
                                         showGrid={true}
                                     />;
-                                return <ChartRow key={"cr_"+el} height={trafficLightWidth}>
+                                return <ChartRow key={"cr_"+el} height={trafficLightHeight}>
                                   <YAxis
                                         id="attn"
                                         label="Attenuation"
@@ -425,7 +436,7 @@ export default class NMC extends React.Component {
                                     />
                                     {axis}
                                     <Charts>
-                                      <LineChart style={generateLineStyle(el)} columns={[el,el+"_a5m",el+"_a1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
+                                      <LineChart style={generateLineStyle(el)} columns={this.state.aggregatePast?[el,el+"_a5m",el+"_a1h"]:[el,el+"_5m",el+"_1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
                                       <LineChart style={generateLineStyle(el)} columns={[el+"_attn"]} axis="attn" series={eventSeries} interpolation="curveLinear"/>
                                       <Baseline axis="y" style={{line:{strokeWidth:2,stroke:"red"},label:{fill:"red"}}} value={threshold} label="Threshold" />
                                       <EventChart size={10} style={trafficLightEventStyleCB} series={
@@ -446,7 +457,7 @@ export default class NMC extends React.Component {
                             </ChartContainer>;
 
     let result =<div>
-                <GlassPane applySettings={this.applySettings.bind(this)} settings={{storageConnectionString:localStorage.getItem("storageConnectionString"),visibleTS:this.state.visibleTS.slice(0, this.state.visibleTS.length),thresholds:this.dataWindow.thresholds}} uiState={this.state.uiState} style={{color:"white",backgroundColor:"grey"}}/>
+                <GlassPane applySettings={this.applySettings.bind(this)} settings={{storageConnectionString:localStorage.getItem("storageConnectionString"),visibleTS:this.state.visibleTS.slice(0, this.state.visibleTS.length),thresholds:this.dataWindow.thresholds,aggregatePast:this.state.aggregatePast}} uiState={this.state.uiState} style={{color:"white",backgroundColor:"grey"}}/>
                 <div className="row">
                     <div className="col-md-8">
                         <span style={dateStyle}>Noise Monitoring Client {new Date().toString()}, gr4per solutions</span>
@@ -476,14 +487,17 @@ export default class NMC extends React.Component {
                                 let rowMax = isNaN(this.state.dataWindow.max[el])?100:this.state.dataWindow.max[el];
                                 if(el == "LeqA")console.log("LeqA_min = " + rowMin + ", max = " + rowMax);
                                 let lastRowEvent = this.dataWindow.events.length > 0? this.dataWindow.events[this.dataWindow.events.length-1].toJSON():null;
+                                let bandLimit = this.dataWindow.thresholds[el.substring(3,el.length)];
                                 let bandValue = "";
                                 let bandValue5m = "";
+                                let bandValue1h = "";
                                 let bandMax5m = "";
                                 let bandMax1h = "";
                                 let attn = null;
                                 if(lastRowEvent) {
                                   bandValue = ""+lastRowEvent.data[el];
-                                  bandValue5m = ""+lastRowEvent.data[el+"_5m"];
+                                  bandValue5m = ""+(this.state.dataWindow.type == "rolling"?lastRowEvent.data[el+"_5m"]:lastRowEvent.data[el+"_a5m"]);
+                                  bandValue1h = ""+(this.state.dataWindow.type == "rolling"?lastRowEvent.data[el+"_1h"]:lastRowEvent.data[el+"_a1h"]);
                                   bandMax5m = isNaN(this.state.dataWindow.max[el+"_5m"])?100:this.state.dataWindow.max[el+"_5m"];
                                   bandMax1h = isNaN(this.state.dataWindow.max[el+"_1h"])?100:this.state.dataWindow.max[el+"_1h"];
                                   attn = lastRowEvent.data[el+"_attn"];
@@ -499,16 +513,19 @@ export default class NMC extends React.Component {
                                 }
 
                                 bandValue5m = formatFloat(bandValue5m);
+                                bandValue1h = formatFloat(bandValue1h);
                                 bandMax5m = formatFloat(bandMax5m);
                                 bandMax1h = formatFloat(bandMax1h);
 
-                                return <div key={"trafficLight_"+el} style={{position:"relative",width:trafficLightWidth, height:trafficLightWidth,backgroundColor:(this.dataWindow.thresholdEvents[el]&&this.dataWindow.thresholdEvents[el].length>0)?mapColor(this.dataWindow.thresholdEvents[el][this.dataWindow.thresholdEvents[el].length-1].color):"black"}}>
-                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/6)+"px"}}>{el}</div>
-                                    {this.state.dataWindow.type == "rolling"?<div style={{position:"relative",fontSize:""+(trafficLightWidth/6)+"px"}}>{bandValue + " dB"}</div>:null}
-                                    {attn == null?"":<div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"Attn " + attn + " dB"}</div>}
-                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{(this.state.dataWindow.type == "rolling"?bandValue5m:bandMax5m) + " dB (5m" + (this.state.dataWindow.type == "rolling"?"":" max") + ")"}</div>
-                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{bandMax1h + " dB (1h max)"}</div>
-                                  <div style={{position:"absolute",width:"10px",backgroundColor:"rgba(40,40,40,0.8)",right:"0px",bottom:"0px",height:""+(trafficLightWidth*(((lastRowEvent?lastRowEvent.data[el]:0)-rowMin)/(rowMax-rowMin)))+"px"}}/>
+                                return <div key={"trafficLight_"+el} style={{position:"relative",width:trafficLightWidth, height:trafficLightHeight,backgroundColor:(this.dataWindow.thresholdEvents[el]&&this.dataWindow.thresholdEvents[el].length>0)?mapColor(this.dataWindow.thresholdEvents[el][this.dataWindow.thresholdEvents[el].length-1].color):"black"}}>
+                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/6)+"px"}}>{el.replace(/_/g,".")}</div>
+                                    {this.state.dataWindow.type == "rolling"?<div style={{position:"relative",fontSize:""+(trafficLightWidth/6)+"px"}}>{"1s "+ bandValue + " dB"}</div>:null}
+                                    {(attn == null || attn == 0)?"":<div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"Attn " + attn + " dB"}</div>}
+                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"5m " + (this.state.dataWindow.type == "rolling"?"":"max ") + (this.state.dataWindow.type == "rolling"?bandValue5m:bandMax5m) + " dB"}</div>
+                                    {(this.state.dataWindow.type == "rolling")?<div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"1h " + bandValue1h + " dB"}</div>:""}
+                                  <div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"1h max " + bandMax1h + " dB"}</div>
+                                  {bandLimit?<div style={{position:"relative",fontSize:""+(trafficLightWidth/8)+"px"}}>{"1h limit " + bandLimit + " dB"}</div>:""}
+                                  <div style={{position:"absolute",width:"10px",backgroundColor:"rgba(40,40,40,0.8)",right:"0px",bottom:"0px",height:""+(trafficLightHeight*(((lastRowEvent?lastRowEvent.data[el]:0)-rowMin)/(rowMax-rowMin)))+"px"}}/>
                                   <div style={{position:"absolute",height:"5px",width:trafficLightWidth,backgroundColor:"black",bottom:"0px"}}/>                                  
                                 </div>
                               })}
@@ -595,9 +612,9 @@ export default class NMC extends React.Component {
     let windowStartTime = startTime?startTime:new Date(windowEndTime.getTime()-lengthMillis);
     console.log("init window, setting length = " + length + " to cover time " + windowStartTime + " - " + windowEndTime);
     let dataWindowThresholds = {};
-    Object.keys(remoteConfig.bandConfig).map((el,idx)=>{dataWindowThresholds[el] = remoteConfig.bandConfig[el].limit1h;});
+    Object.keys(remoteConfig.bandConfig).map((el,idx)=>{dataWindowThresholds[el.replace(/\./g,"_")] = remoteConfig.bandConfig[el].limit1h;});
     console.log("initializeDataWindow:  dataWindowThresholds = " + JSON.stringify(dataWindowThresholds));
-    this.dataWindow = new NMDataWindow(startTime, length, dataWindowThresholds, this.state.visibleTS);
+    this.dataWindow = new NMDataWindow(startTime, length, dataWindowThresholds, this.state.visibleTS, this.state.aggregatePast);
     this.setState((ps)=> {
       ps.dataWindow = this.dataWindow.state;
       return ps;
@@ -670,7 +687,7 @@ export default class NMC extends React.Component {
     let data = null;
     let events = []; // these are pondjs time events
     let dataResponses = [];
-    while(currentStartTime.getTime() < this.dataWindow.state.windowEndTime) {
+    while(this.state.aggregatePast && currentStartTime.getTime() < this.dataWindow.state.windowEndTime) {
       // open next fileCreatedDate
       currentFileName = this.getFileName(currentStartTime);
       let currentBlobClient = await this.state.containerClient.getBlobClient(currentFileName);
@@ -795,45 +812,47 @@ export default class NMC extends React.Component {
     console.log("data winodw loaded. nmdId = " + this.state.nmdId + ". initializing NMS websocket keep-alive...");
     
     const increment = sec;
-    this.interval = setInterval(async ()=>{
-      if(this.nmdClient) { 
-        if( (new Date().getTime() - this.lastPing.getTime()) > 5000) {
-          console.log("" + new Date() + ": found stale server connection not pinged since " + this.lastPing + ", leaving, then resetting nmdClient and scheduling reconnect...");
-          this.sendRemoteCommand({command:"leave",params:[false]});           
-          this.nmdClient.close();
+    
+    if(!this.state.updatePaused) {
+      this.interval = setInterval(async ()=>{
+        if(this.nmdClient) { 
+          if( (new Date().getTime() - this.lastPing.getTime()) > 5000) {
+            console.log("" + new Date() + ": found stale server connection not pinged since " + this.lastPing + ", leaving, then resetting nmdClient and scheduling reconnect...");
+            this.sendRemoteCommand({command:"leave",params:[false]});           
+            this.nmdClient.close();
+            this.nmdClient = null;
+            if(this.state.nmdId) {
+              console.log("setting timer for reconnect attempt...");
+              try {
+                clearTimeout(this.timeout);
+              }
+              catch(e) {}
+              this.timeout = setTimeout(this.joinNMS.bind(this, this.state.nmdId),1000);
+            }
+            return;
+          }
+          else if(this.nmdClient.readyState == 1){ // SOCKET is open
+            console.log("sending ping to server");
+            this.sendRemoteCommand({command:"clientPing",params:[]});
+          }
+          else {
+            console.log("ping skipped, socket state = " + this.nmdClient.readyState);
+          }
+        }
+        else {
           this.nmdClient = null;
           if(this.state.nmdId) {
-            console.log("setting timer for reconnect attempt...");
             try {
               clearTimeout(this.timeout);
             }
-            catch(e) {}
+            catch(e){}
+            console.log("no nmd client, setting time out to re connect to nmd " + this.state.nmdId ,true);
+            // find out whether the game exists on server
             this.timeout = setTimeout(this.joinNMS.bind(this, this.state.nmdId),1000);
           }
-          return;
         }
-        else if(this.nmdClient.readyState == 1){ // SOCKET is open
-          console.log("sending ping to server");
-          this.sendRemoteCommand({command:"clientPing",params:[]});
-        }
-        else {
-          console.log("ping skipped, socket state = " + this.nmdClient.readyState);
-        }
-      }
-      else {
-        this.nmdClient = null;
-        if(this.state.nmdId) {
-          try {
-            clearTimeout(this.timeout);
-          }
-          catch(e){}
-          console.log("no nmd client, setting time out to re connect to nmd " + this.state.nmdId ,true);
-          // find out whether the game exists on server
-          this.timeout = setTimeout(this.joinNMS.bind(this, this.state.nmdId),1000);
-        }
-      }
-    },2000);
-  
+      },2000);
+    }
   }
 
   componentWillUnmount() {

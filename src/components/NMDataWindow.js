@@ -1,7 +1,7 @@
 import {TimeEvent} from "pondjs";
 
 // 40 bands: 4 full spectrum (A, B, C, Z) and 36 1/3 octave
-const bands = ["LeqA","LeqB","LeqC","LeqZ","Leq6.3Hz","Leq8Hz","Leq10Hz","Leq12.5Hz","Leq16Hz","Leq20Hz","Leq25Hz","Leq31.5Hz","Leq40Hz","Leq50Hz","Leq63Hz","Leq80Hz","Leq100Hz","Leq125Hz","Leq160Hz","Leq200Hz","Leq250Hz","Leq315Hz","Leq400Hz","Leq500Hz","Leq630Hz","Leq800Hz","Leq1kHz","Leq1.25kHz","Leq1.6kHz","Leq2kHz","Leq2.5kHz","Leq3.15kHz","Leq4kHz","Leq5kHz","Leq6.3kHz","Leq8kHz","Leq10kHz","Leq12.5kHz","Leq16kHz","Leq20kHz"];
+const bands = ["LeqA","LeqB","LeqC","LeqZ","Leq6.3Hz","Leq8Hz","Leq10Hz","Leq12_5Hz","Leq16Hz","Leq20Hz","Leq25Hz","Leq31_5Hz","Leq40Hz","Leq50Hz","Leq63Hz","Leq80Hz","Leq100Hz","Leq125Hz","Leq160Hz","Leq200Hz","Leq250Hz","Leq315Hz","Leq400Hz","Leq500Hz","Leq630Hz","Leq800Hz","Leq1kHz","Leq1_25kHz","Leq1_6kHz","Leq2kHz","Leq2_5kHz","Leq3_15kHz","Leq4kHz","Leq5kHz","Leq6_3kHz","Leq8kHz","Leq10kHz","Leq12_5kHz","Leq16kHz","Leq20kHz"];
 const dataLabels = ["Time","RcvTime"].concat(bands);
 const length5msecs = 300;
 const length1hsecs = 3600;
@@ -14,7 +14,7 @@ export default class NMDataWindow {
    * thresholds - map of bandname to float dB value, e.g. {"A":90.0}
    * visibleBands - bands to take into account in aggregation etc.
    */
-  constructor(startTime, length, thresholds, visibleBands) {
+  constructor(startTime, length, thresholds, visibleBands, aggregatePast) {
     
     // this is the properties describing the window state. rendering relevant
     this.state = {
@@ -23,6 +23,7 @@ export default class NMDataWindow {
       max:{},
       min:{},
       visibleBands:visibleBands,
+      aggregatePast:aggregatePast,
       windowStartTime:startTime!=null?startTime:new Date(new Date().getTime()-length*1000),
       windowEndTime:startTime!=null?new Date(startTime.getTime()+length*1000):new Date(),
       status:"initializing"
@@ -41,7 +42,7 @@ export default class NMDataWindow {
     this.max = {}; // map band to min value in current window
     this.nextAggregateIdx = 0;
     this.thresholdEvents = {}; // map band to array of Event objects {startTime, endTime, totalEnergy, Leq, color}
-   
+    console.log("NMDataWindow(aggregatePast=" + aggregatePast + ")");
   }
 
   /**
@@ -131,11 +132,12 @@ export default class NMDataWindow {
    * returns updated windowState or null if nothing was changed
    */
   addEvents(events) {
-    if(!events || events.length <1) {
-      console.log("skipping addEvents because no events passed.");
+    console.log("addEvents called, events.length = " + events.length + ", aggregatePast = " + this.state.aggregatePast + ", type = " + this.state.type + ", status = " + this.state.status);
+    if(!events || ( events.length<1 && (this.state.type == "fix" || this.state.aggregatePast)) ) {
+      console.log("skipping addEvents because no events passed and window is not rolling with past aggregate");
       return null;
     }
-    if(this.state.type != "rolling" && events[0].timestamp().getTime() > this.state.windowEndTime.getTime()) {
+    if(this.state.type != "rolling" && events[0] && events[0].timestamp().getTime() > this.state.windowEndTime.getTime()) {
       console.log("skipping add events as oldest event incoming is newer than window end of fix window.");
       return null;
     }
@@ -156,7 +158,13 @@ export default class NMDataWindow {
     let ee1h = this.ee1h;
     
     if(events.length == 0) {
-      console.log("zero new events, skipping aggregation");
+      if(!this.state.aggregatePast && this.state.type == "rolling") {
+        // there is no data yet, but we still have to set the window status to loaded in order to receive recent data updates from nms
+        this.state.status = "loaded";
+      }
+      else {
+        console.log("zero new events, skipping aggregation");
+      }
     }
     else {
       // init window total energies and min/max values
@@ -378,7 +386,9 @@ export default class NMDataWindow {
    * data entry
    */
   getNewestDateStr() {
-    return new Date(this.events[this.events.length-1].timestamp()).toISOString().substring(0,19);
+    let d = this.state.windowEndTime;
+    if(this.events.length > 0) d = new Date(this.events[this.events.length-1].timestamp());
+    return d.toISOString().substring(0,19);
   }
 }
 

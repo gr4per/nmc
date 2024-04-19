@@ -1,6 +1,6 @@
 import React, { Component} from "react";
 import {bands} from "./NMDataWindow.js";
-import {TextEntry} from "./StorageConnectionModal.js";
+import {TextEntry, CheckBox} from "./StorageConnectionModal.js";
 
 export default class SettingsDialog extends React.Component {  
 
@@ -43,8 +43,16 @@ export default class SettingsDialog extends React.Component {
     });
   }
   
+  toggleAggregatePast(value) {
+    console.log("toggling aggregatePast, old value = " + this.state.aggregatePast);
+    this.setState(s=>{
+      s.aggregatePast = !s.aggregatePast;
+      return s;
+    });
+  }
+
   render() {
-    //console.log("render, settings = " + JSON.stringify(this.props.settings));
+    console.log("render, settings = " + JSON.stringify(this.props.settings));
     let bandColumns = [];
     let columnCount = 4;
     for(let i = 0; i < bands.length; i++) {
@@ -62,6 +70,9 @@ export default class SettingsDialog extends React.Component {
               <li key={b} className={"choiceItem"+(this.state.visibleTS.indexOf(b)>-1?" active":"")} onClick={this.toggleBand.bind(this,b)}>{b.substring(3,b.length) + (Object.values(this.props.settings.thresholds).indexOf(b.substring(3,b.length))>-1?" *":"")}</li>)}
           </ul>)}
         </div>
+      </div>
+      <div id="aggregationConfig">
+        <CheckBox initialValue={this.props.settings.aggregatePast} heading={"Include past data in aggregate on load"} message={""} onChange={this.toggleAggregatePast.bind(this)}/>
       </div>
       <div id="storageConfig">
         <TextEntry initialValue={this.props.settings.storageConnectionString} heading={"StorageConnectionString"} message={""} onSubmit={this.commit.bind(this)}/>

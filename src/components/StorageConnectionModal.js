@@ -37,6 +37,38 @@ class TextEntry extends React.Component {
   }
 }
 
+class CheckBox extends React.Component {  
+
+  constructor(props) {
+    super(props); // uiState
+    this.state={inputValue: this.props.initialValue?this.props.initialValue:false};
+    console.log("new checkbox, inputValue = " + this.state.inputValue);
+  }
+  
+  updateInputValue(evt) {
+    console.log("CheckBox.updateInputValue new value = " + JSON.stringify(evt.target.value) + "=" + !this.state.inputValue);
+    this.props.onChange(!this.state.inputValue);
+    this.setState({
+      inputValue: !this.state.inputValue
+    });
+  }
+  
+  submit(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    this.commit();
+  }
+  
+  render() {
+    return <div style={{textAlign:"center", backgroundColor:"white"}}>
+      <p style={{fontSize:"32px"}}>{this.props.heading}</p>
+      <p style={{fontSize:"18px"}}>{this.props.message}</p>
+      <input type="checkbox" size="50" value="aggregatePast" checked={this.state.inputValue} 
+        onChange={this.updateInputValue.bind(this)}/>
+    </div>;
+  }
+}
+
 export default class StorageConnectionModal extends React.Component {  
 
   constructor(props) {
@@ -84,4 +116,4 @@ export default class StorageConnectionModal extends React.Component {
   }
 }
 
-export {TextEntry, StorageConnectionModal}
+export {TextEntry, CheckBox, StorageConnectionModal}
