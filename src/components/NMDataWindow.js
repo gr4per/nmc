@@ -1,7 +1,7 @@
 import {TimeEvent} from "pondjs";
 
 // 40 bands: 4 full spectrum (A, B, C, Z) and 36 1/3 octave
-const bands = ["LeqA","LeqB","LeqC","LeqZ","Leq6.3Hz","Leq8Hz","Leq10Hz","Leq12_5Hz","Leq16Hz","Leq20Hz","Leq25Hz","Leq31_5Hz","Leq40Hz","Leq50Hz","Leq63Hz","Leq80Hz","Leq100Hz","Leq125Hz","Leq160Hz","Leq200Hz","Leq250Hz","Leq315Hz","Leq400Hz","Leq500Hz","Leq630Hz","Leq800Hz","Leq1kHz","Leq1_25kHz","Leq1_6kHz","Leq2kHz","Leq2_5kHz","Leq3_15kHz","Leq4kHz","Leq5kHz","Leq6_3kHz","Leq8kHz","Leq10kHz","Leq12_5kHz","Leq16kHz","Leq20kHz"];
+const bands = ["LeqA","LeqB","LeqC","LeqZ","Leq6_3Hz","Leq8Hz","Leq10Hz","Leq12_5Hz","Leq16Hz","Leq20Hz","Leq25Hz","Leq31_5Hz","Leq40Hz","Leq50Hz","Leq63Hz","Leq80Hz","Leq100Hz","Leq125Hz","Leq160Hz","Leq200Hz","Leq250Hz","Leq315Hz","Leq400Hz","Leq500Hz","Leq630Hz","Leq800Hz","Leq1kHz","Leq1_25kHz","Leq1_6kHz","Leq2kHz","Leq2_5kHz","Leq3_15kHz","Leq4kHz","Leq5kHz","Leq6_3kHz","Leq8kHz","Leq10kHz","Leq12_5kHz","Leq16kHz","Leq20kHz","LeqBass"];
 const dataLabels = ["Time","RcvTime"].concat(bands);
 const length5msecs = 300;
 const length1hsecs = 3600;
@@ -42,12 +42,12 @@ export default class NMDataWindow {
     this.max = {}; // map band to min value in current window
     this.nextAggregateIdx = 0;
     this.thresholdEvents = {}; // map band to array of Event objects {startTime, endTime, totalEnergy, Leq, color}
-    console.log("NMDataWindow(aggregatePast=" + aggregatePast + ")");
+    console.log("NMDataWindow(aggregatePast=" + aggregatePast + ",type=" + this.state.type+")");
   }
 
   /**
    * Takes data as string in NM csv file format
-   * slot time, recv time, a , b, c, z, bands0..N
+   * slot time, recv time, a , b, c, z, bands0..N (the last one is calculated and not from server line)
    * and applies them to a given TimeEvent array
    */
   addDataToEvents(data,events) {
@@ -76,14 +76,27 @@ export default class NMDataWindow {
   applyDataLineToWindow(eventBuffer, t, line) {
     let l = line.split("\t");
     let dataMap = {ee:{}}
-    for(let i = 2;i < dataLabels.length;i++) {
+    for(let i = 2;i < dataLabels.length-1;i++) {
       let label = dataLabels[i];
       dataMap[label] = l[i];
-      dataMap[label+"_a5m"] = l[i+bands.length];
-      dataMap[label+"_a1h"] = l[i+bands.length*2];
-      dataMap[label+"_attn"] = l[i+bands.length*3];
+      dataMap[label+"_a5m"] = l[i+(bands.length-1)];
+      dataMap[label+"_a1h"] = l[i+(bands.length-1)*2];
+      dataMap[label+"_attn"] = l[i+(bands.length-1)*3];
       dataMap.ee[label] = Math.pow(10,parseFloat(l[i])/10.0);
     }
+    // now the calculated band
+    let label = dataLabels[dataLabels.length-1];
+    let tsum = 0;
+    let tsum5m = 0;
+    let tsum1h = 0;
+    for(let i = 11; i < 17;i++) { tsum += Math.pow(10,l[i]/10);tsum5m += Math.pow(10,l[i+(bands.length-1)]/10);tsum1h += Math.pow(10,l[i+(bands.length-1)*2]/10);} // add 31.5Hz, 40Hz, 50Hz, 63Hz, 80Hz, 100Hz to a common bass band
+    tsum = 10*Math.log10(tsum); tsum5m = 10*Math.log10(tsum5m); tsum1h = 10*Math.log10(tsum1h);
+    dataMap[label] = tsum; 
+    dataMap[label+"_a5m"] = tsum5m;
+    dataMap[label+"_a1h"] = tsum1h;
+    dataMap[label+"_attn"] = 0;
+    dataMap.ee[label] = Math.pow(10,parseFloat(tsum)/10.0);
+    
     //{"LeqA":l[2],"LeqB":l[3],"LeqC":l[4],"LeqZ":l[5],"Leq6.3Hz":l[6],"Leq8Hz":l[7],"Leq10Hz":l[8],"Leq12.5Hz":l[9],"Leq16Hz":l[10],"Leq20Hz":l[11],"Leq25Hz":l[12],"Leq31.5Hz":l[13],"Leq40Hz":l[14],"Leq50Hz":l[15],"Leq63Hz":l[16],"Leq80Hz":l[17],"Leq100Hz":l[18],"Leq125Hz":l[19],"Leq160Hz":l[20],"Leq200Hz":l[21],"Leq250Hz":l[22],"Leq315Hz":l[23],"Leq400Hz":l[24],"Leq500Hz":l[25],"Leq630Hz":l[26],"Leq800Hz":l[27],"Leq1kHz":l[28],"Leq1.25kHz":l[29],"Leq1.6kHz":l[30],"Leq2kHz":l[31],"Leq2.5kHz":l[32],"Leq3.15kHz":l[33],"Leq4kHz":l[34],"Leq5kHz":l[35],"Leq6.3kHz":l[36],"Leq8kHz":l[37],"Leq10kHz":l[38],"Leq12.5kHz":l[39],"Leq16kHz":l[40],"Leq20kHz":l[41]};
     if(eventBuffer.length > 0) {
       let top = eventBuffer[eventBuffer.length-1];

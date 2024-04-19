@@ -436,7 +436,7 @@ export default class NMC extends React.Component {
                                     />
                                     {axis}
                                     <Charts>
-                                      <LineChart style={generateLineStyle(el)} columns={this.state.aggregatePast?[el,el+"_a5m",el+"_a1h"]:[el,el+"_5m",el+"_1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
+                                      <LineChart style={generateLineStyle(el)} columns={(this.state.aggregatePast || this.dataWindow.state.type=="fix")?[el,el+"_a5m",el+"_a1h"]:[el,el+"_5m",el+"_1h"]} axis="y" series={eventSeries} interpolation="curveLinear"/>
                                       <LineChart style={generateLineStyle(el)} columns={[el+"_attn"]} axis="attn" series={eventSeries} interpolation="curveLinear"/>
                                       <Baseline axis="y" style={{line:{strokeWidth:2,stroke:"red"},label:{fill:"red"}}} value={threshold} label="Threshold" />
                                       <EventChart size={10} style={trafficLightEventStyleCB} series={
@@ -682,12 +682,12 @@ export default class NMC extends React.Component {
     this.updating = true;
     let currentFileName = cfn;
     let currentStartTime = this.dataWindow.state.windowStartTime;
-    console.log("updateDataWindow: currentStartTime = " + currentStartTime);
+    console.log("updateDataWindow: currentStartTime = " + currentStartTime + ", type = " + this.dataWindow.state.type + ", aggregatePast = " + this.state.aggregatePast);
     if(currentFileName) currentStartTime = new Date(currentFileName.substring(0,10).replace(/\//g,'-')+"T"+currentFileName.substring(11,13)+":00:00.000Z");
     let data = null;
     let events = []; // these are pondjs time events
     let dataResponses = [];
-    while(this.state.aggregatePast && currentStartTime.getTime() < this.dataWindow.state.windowEndTime) {
+    while( (this.state.aggregatePast || this.dataWindow.state.type == "fix") && currentStartTime.getTime() < this.dataWindow.state.windowEndTime) {
       // open next fileCreatedDate
       currentFileName = this.getFileName(currentStartTime);
       let currentBlobClient = await this.state.containerClient.getBlobClient(currentFileName);
